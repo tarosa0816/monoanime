@@ -1,2 +1,339 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>アニメーションの仕組み体験（2段階オニオンスキン）</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background-color: #f4f4f7;
+      margin: 20px;
+    }
+    h1 {
+      font-size: 1.4rem;
+      margin-bottom: 8px;
+    }
+    .description {
+      font-size: 0.9rem;
+      color: #555;
+      margin-bottom: 16px;
+    }
+    .canvas-area {
+      position: relative;
+      width: 400px;
+      height: 400px;
+      background: #fff;
+      border: 2px solid #333;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    #drawCanvas {
+      cursor: crosshair;
+    }
+    /* 2つ前のコマ：ごく薄く（10%） */
+    #onionPrev2Canvas {
+      opacity: 0.10;
+      pointer-events: none;
+    }
+    /* 1つ前のコマ：薄く（30%） */
+    #onionPrev1Canvas {
+      opacity: 0.30;
+      pointer-events: none;
+    }
+    .controls {
+      margin-top: 15px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    button {
+      padding: 8px 16px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      border: 1px solid #888;
+      border-radius: 4px;
+      background-color: #fff;
+      transition: background-color 0.2s;
+    }
+    button:hover {
+      background-color: #e8e8e8;
+    }
+    button.primary {
+      background-color: #2b6cb0;
+      color: #fff;
+      border-color: #2b6cb0;
+    }
+    button.primary:hover {
+      background-color: #2c5282;
+    }
+    .status-panel {
+      margin-top: 12px;
+      font-size: 0.95rem;
+      font-weight: bold;
+    }
+    .speed-control {
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.85rem;
+    }
+    .legend {
+      margin-top: 6px;
+      font-size: 0.8rem;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>アニメーションの仕組み（コマ送り）</h1>
+  <p class="description">前と前々のコマを参考にしながら、少しずつ変化をつけて描いてみましょう。</p>
+
+  <div class="canvas-area">
+    <!-- 下層：2つ前のコマ（最薄） -->
+    <canvas id="onionPrev2Canvas" width="400" height="400"></canvas>
+    <!-- 中層：1つ前のコマ（薄） -->
+    <canvas id="onionPrev1Canvas" width="400" height="400"></canvas>
+    <!-- 最前面：現在描画用 -->
+    <canvas id="drawCanvas" width="400" height="400"></canvas>
+  </div>
+
+  <div class="legend">
+    ※ 透けて見える線：【濃いめ＝直前のコマ】 / 【とても薄い＝2つ前のコマ】
+  </div>
+
+  <div class="status-panel">
+    現在のコマ: <span id="frameCounter">1</span> / 総コマ数: <span id="totalFrames">1</span>
+  </div>
+
+  <div class="controls">
+    <button id="clearBtn">このコマを消す</button>
+    <button id="nextFrameBtn">次のコマを追加 ➔</button>
+    <button id="playBtn" class="primary">再生 / 停止</button>
+    <button id="resetAllBtn">最初からやり直す</button>
+  </div>
+
+  <div class="speed-control">
+    <label for="fpsRange">再生速度 (fps):</label>
+    <input type="range" id="fpsRange" min="2" max="24" value="8">
+    <span id="fpsValue">8コマ/秒</span>
+  </div>
+
+  <script>
+    const drawCanvas = document.getElementById('drawCanvas');
+    const drawCtx = drawCanvas.getContext('2d');
+    const onionPrev1Canvas = document.getElementById('onionPrev1Canvas');
+    const onionPrev1Ctx = onionPrev1Canvas.getContext('2d');
+    const onionPrev2Canvas = document.getElementById('onionPrev2Canvas');
+    const onionPrev2Ctx = onionPrev2Canvas.getContext('2d');
+
+    const frameCounter = document.getElementById('frameCounter');
+    const totalFrames = document.getElementById('totalFrames');
+    const playBtn = document.getElementById('playBtn');
+    const fpsRange = document.getElementById('fpsRange');
+    const fpsValue = document.getElementById('fpsValue');
+
+    let frames = [];
+    let currentFrameIndex = 0;
+    let isDrawing = false;
+    let isPlaying = false;
+    let playInterval = null;
+
+    // 描画スタイルの設定（モノクロ・黒線）
+    drawCtx.lineWidth = 4;
+    drawCtx.lineCap = 'round';
+    drawCtx.lineJoin = 'round';
+    drawCtx.strokeStyle = '#000000';
+
+    // --- お絵描き処理（マウス / タッチ対応） ---
+    function startDrawing(e) {
+      if (isPlaying) return;
+      isDrawing = true;
+      const { x, y } = getCoordinates(e);
+      drawCtx.beginPath();
+      drawCtx.moveTo(x, y);
+    }
+
+    function draw(e) {
+      if (!isDrawing || isPlaying) return;
+      const { x, y } = getCoordinates(e);
+      drawCtx.lineTo(x, y);
+      drawCtx.stroke();
+    }
+
+    function stopDrawing() {
+      if (!isDrawing) return;
+      isDrawing = false;
+      saveCurrentFrame();
+    }
+
+    function getCoordinates(e) {
+      const rect = drawCanvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      return {
+        x: clientX - rect.left,
+        y: clientY - rect.top
+      };
+    }
+
+    drawCanvas.addEventListener('mousedown', startDrawing);
+    drawCanvas.addEventListener('mousemove', draw);
+    window.addEventListener('mouseup', stopDrawing);
+
+    drawCanvas.addEventListener('touchstart', (e) => { e.preventDefault(); startDrawing(e); }, { passive: false });
+    drawCanvas.addEventListener('touchmove', (e) => { e.preventDefault(); draw(e); }, { passive: false });
+    window.addEventListener('touchend', stopDrawing);
+
+    // --- コマの保存とオニオンスキンの更新 ---
+    function saveCurrentFrame() {
+      frames[currentFrameIndex] = drawCanvas.toDataURL();
+      updateInfo();
+    }
+
+    function clearCanvas(ctx) {
+      ctx.clearRect(0, 0, 400, 400);
+    }
+
+    function updateOnionSkins() {
+      clearCanvas(onionPrev1Ctx);
+      clearCanvas(onionPrev2Ctx);
+
+      // 1つ前のコマを表示
+      if (currentFrameIndex >= 1 && frames[currentFrameIndex - 1]) {
+        const img1 = new Image();
+        img1.src = frames[currentFrameIndex - 1];
+        img1.onload = () => onionPrev1Ctx.drawImage(img1, 0, 0);
+      }
+
+      // 2つ前のコマを表示
+      if (currentFrameIndex >= 2 && frames[currentFrameIndex - 2]) {
+        const img2 = new Image();
+        img2.src = frames[currentFrameIndex - 2];
+        img2.onload = () => onionPrev2Ctx.drawImage(img2, 0, 0);
+      }
+    }
+
+    // 「次のコマを追加」
+    document.getElementById('nextFrameBtn').addEventListener('click', () => {
+      if (isPlaying) return;
+      saveCurrentFrame();
+
+      currentFrameIndex++;
+      frames[currentFrameIndex] = '';
+      clearCanvas(drawCtx);
+
+      // 1コマ前、2コマ前の表示を更新
+      updateOnionSkins();
+      updateInfo();
+    });
+
+    // 「このコマを消す」
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      if (isPlaying) return;
+      clearCanvas(drawCtx);
+      frames[currentFrameIndex] = '';
+    });
+
+    // 「最初からやり直す」
+    document.getElementById('resetAllBtn').addEventListener('click', () => {
+      if (isPlaying) stopPlayback();
+      frames = [];
+      currentFrameIndex = 0;
+      clearCanvas(drawCtx);
+      clearCanvas(onionPrev1Ctx);
+      clearCanvas(onionPrev2Ctx);
+      updateInfo();
+    });
+
+    function updateInfo() {
+      frameCounter.textContent = currentFrameIndex + 1;
+      totalFrames.textContent = Math.max(frames.length, currentFrameIndex + 1);
+    }
+
+    // --- 再生 / 停止 処理 ---
+    playBtn.addEventListener('click', () => {
+      if (isPlaying) {
+        stopPlayback();
+      } else {
+        startPlayback();
+      }
+    });
+
+    function startPlayback() {
+      saveCurrentFrame();
+      const validFrames = frames.filter(f => f && f.length > 0);
+      if (validFrames.length < 2) {
+        alert('パラパラマンガにするには、2コマ以上描いてみてください。');
+        return;
+      }
+
+      isPlaying = true;
+      playBtn.textContent = '停止';
+      playBtn.classList.remove('primary');
+
+      // 再生中はオニオンスキンを両方隠す
+      onionPrev1Canvas.style.display = 'none';
+      onionPrev2Canvas.style.display = 'none';
+
+      let playIdx = 0;
+      const intervalMs = 1000 / parseInt(fpsRange.value, 10);
+
+      playInterval = setInterval(() => {
+        while (!frames[playIdx] && playIdx < frames.length) {
+          playIdx = (playIdx + 1) % frames.length;
+        }
+
+        const img = new Image();
+        img.src = frames[playIdx];
+        img.onload = () => {
+          clearCanvas(drawCtx);
+          drawCtx.drawImage(img, 0, 0);
+          frameCounter.textContent = playIdx + 1;
+        };
+
+        playIdx = (playIdx + 1) % frames.length;
+      }, intervalMs);
+    }
+
+    function stopPlayback() {
+      isPlaying = false;
+      clearInterval(playInterval);
+      playBtn.textContent = '再生 / 停止';
+      playBtn.classList.add('primary');
+
+      onionPrev1Canvas.style.display = 'block';
+      onionPrev2Canvas.style.display = 'block';
+
+      // 編集状態に戻す
+      clearCanvas(drawCtx);
+      if (frames[currentFrameIndex]) {
+        const img = new Image();
+        img.src = frames[currentFrameIndex];
+        img.onload = () => drawCtx.drawImage(img, 0, 0);
+      }
+      updateOnionSkins();
+      updateInfo();
+    }
+
+    // 再生速度スライダー
+    fpsRange.addEventListener('input', (e) => {
+      fpsValue.textContent = `${e.target.value}コマ/秒`;
+      if (isPlaying) {
+        stopPlayback();
+        startPlayback();
+      }
+    });
+  </script>
+</body>
+</html>
