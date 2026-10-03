@@ -2,7 +2,11 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>アニメーションの仕組み体験（2段階オニオンスキン）</title>
+  <title>アニメーションの仕組み体験（APNG出力・保存機能付き）</title>
+  <!-- APNG生成用の外部ライブラリ（CDN） -->
+  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/upng-js@2.1.0/UPNG.min.js"></script>
+
   <style>
     body {
       font-family: sans-serif;
@@ -47,7 +51,7 @@
       opacity: 0.30;
       pointer-events: none;
     }
-    .controls {
+    .controls, .file-controls {
       margin-top: 15px;
       display: flex;
       gap: 10px;
@@ -55,7 +59,12 @@
       flex-wrap: wrap;
       justify-content: center;
     }
-    button {
+    .file-controls {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px dashed #ccc;
+    }
+    button, .file-label {
       padding: 8px 16px;
       font-size: 0.95rem;
       cursor: pointer;
@@ -63,8 +72,10 @@
       border-radius: 4px;
       background-color: #fff;
       transition: background-color 0.2s;
+      display: inline-flex;
+      align-items: center;
     }
-    button:hover {
+    button:hover, .file-label:hover {
       background-color: #e8e8e8;
     }
     button.primary {
@@ -74,6 +85,14 @@
     }
     button.primary:hover {
       background-color: #2c5282;
+    }
+    button.export-btn {
+      background-color: #2e7d32;
+      color: #fff;
+      border-color: #2e7d32;
+    }
+    button.export-btn:hover {
+      background-color: #1b5e20;
     }
     .status-panel {
       margin-top: 12px;
@@ -92,12 +111,15 @@
       font-size: 0.8rem;
       color: #666;
     }
+    input[type="file"] {
+      display: none;
+    }
   </style>
 </head>
 <body>
 
   <h1>アニメーションの仕組み（コマ送り）</h1>
-  <p class="description">前と前々のコマを参考にしながら、少しずつ変化をつけて描いてみましょう。</p>
+  <p class="description">前と前々のコマを参考にしながら描き、動画として書き出したり保存できます。</p>
 
   <div class="canvas-area">
     <!-- 下層：2つ前のコマ（最薄） -->
@@ -116,6 +138,7 @@
     現在のコマ: <span id="frameCounter">1</span> / 総コマ数: <span id="totalFrames">1</span>
   </div>
 
+  <!-- 基本操作 -->
   <div class="controls">
     <button id="clearBtn">このコマを消す</button>
     <button id="nextFrameBtn">次のコマを追加 ➔</button>
@@ -127,6 +150,14 @@
     <label for="fpsRange">再生速度 (fps):</label>
     <input type="range" id="fpsRange" min="2" max="24" value="8">
     <span id="fpsValue">8コマ/秒</span>
+  </div>
+
+  <!-- ファイル操作（保存・読み込み・APNG出力） -->
+  <div class="file-controls">
+    <button id="exportApngBtn" class="export-btn">APNGとして出力</button>
+    <button id="saveProjectBtn">作品を保存 (.json)</button>
+    <label class="file-label" for="loadProjectInput">作品を読込 (.json)</label>
+    <input type="file" id="loadProjectInput" accept=".json">
   </div>
 
   <script>
@@ -149,7 +180,7 @@
     let isPlaying = false;
     let playInterval = null;
 
-    // 描画スタイルの設定（モノクロ・黒線）
+    // 描画設定（黒線）
     drawCtx.lineWidth = 4;
     drawCtx.lineCap = 'round';
     drawCtx.lineJoin = 'round';
@@ -195,7 +226,7 @@
     drawCanvas.addEventListener('touchmove', (e) => { e.preventDefault(); draw(e); }, { passive: false });
     window.addEventListener('touchend', stopDrawing);
 
-    // --- コマの保存とオニオンスキンの更新 ---
+    // --- コマ管理・オニオンスキン ---
     function saveCurrentFrame() {
       frames[currentFrameIndex] = drawCanvas.toDataURL();
       updateInfo();
@@ -209,14 +240,14 @@
       clearCanvas(onionPrev1Ctx);
       clearCanvas(onionPrev2Ctx);
 
-      // 1つ前のコマを表示
+      // 1つ前のコマ
       if (currentFrameIndex >= 1 && frames[currentFrameIndex - 1]) {
         const img1 = new Image();
         img1.src = frames[currentFrameIndex - 1];
         img1.onload = () => onionPrev1Ctx.drawImage(img1, 0, 0);
       }
 
-      // 2つ前のコマを表示
+      // 2つ前のコマ
       if (currentFrameIndex >= 2 && frames[currentFrameIndex - 2]) {
         const img2 = new Image();
         img2.src = frames[currentFrameIndex - 2];
@@ -233,7 +264,6 @@
       frames[currentFrameIndex] = '';
       clearCanvas(drawCtx);
 
-      // 1コマ前、2コマ前の表示を更新
       updateOnionSkins();
       updateInfo();
     });
@@ -261,7 +291,7 @@
       totalFrames.textContent = Math.max(frames.length, currentFrameIndex + 1);
     }
 
-    // --- 再生 / 停止 処理 ---
+    // --- 再生 / 停止 ---
     playBtn.addEventListener('click', () => {
       if (isPlaying) {
         stopPlayback();
@@ -282,7 +312,6 @@
       playBtn.textContent = '停止';
       playBtn.classList.remove('primary');
 
-      // 再生中はオニオンスキンを両方隠す
       onionPrev1Canvas.style.display = 'none';
       onionPrev2Canvas.style.display = 'none';
 
@@ -315,7 +344,6 @@
       onionPrev1Canvas.style.display = 'block';
       onionPrev2Canvas.style.display = 'block';
 
-      // 編集状態に戻す
       clearCanvas(drawCtx);
       if (frames[currentFrameIndex]) {
         const img = new Image();
@@ -326,12 +354,140 @@
       updateInfo();
     }
 
-    // 再生速度スライダー
     fpsRange.addEventListener('input', (e) => {
       fpsValue.textContent = `${e.target.value}コマ/秒`;
       if (isPlaying) {
         stopPlayback();
         startPlayback();
+      }
+    });
+
+    // --- 追加機能 1: 作品の保存 (.json) ---
+    document.getElementById('saveProjectBtn').addEventListener('click', () => {
+      if (isPlaying) stopPlayback();
+      saveCurrentFrame();
+
+      const projectData = {
+        version: "1.0",
+        fps: parseInt(fpsRange.value, 10),
+        frames: frames,
+        currentFrameIndex: currentFrameIndex
+      };
+
+      const blob = new Blob([JSON.stringify(projectData)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `animation_project_${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    // --- 追加機能 2: 作品の読込 (.json) ---
+    document.getElementById('loadProjectInput').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const projectData = JSON.parse(event.target.result);
+          if (!projectData.frames || !Array.isArray(projectData.frames)) {
+            throw new Error('不正なファイル形式です');
+          }
+
+          if (isPlaying) stopPlayback();
+
+          frames = projectData.frames;
+          currentFrameIndex = projectData.currentFrameIndex || (frames.length > 0 ? frames.length - 1 : 0);
+          
+          if (projectData.fps) {
+            fpsRange.value = projectData.fps;
+            fpsValue.textContent = `${projectData.fps}コマ/秒`;
+          }
+
+          // 画面の復元
+          clearCanvas(drawCtx);
+          if (frames[currentFrameIndex]) {
+            const img = new Image();
+            img.src = frames[currentFrameIndex];
+            img.onload = () => drawCtx.drawImage(img, 0, 0);
+          }
+          updateOnionSkins();
+          updateInfo();
+          alert('プロジェクトを読み込みました。');
+        } catch (err) {
+          alert('ファイルの読み込みに失敗しました。正しいプロジェクトファイルを選択してください。');
+        }
+      };
+      reader.readAsText(file);
+      // 同じファイルを連続で選択できるようにリセット
+      e.target.value = '';
+    });
+
+    // --- 追加機能 3: APNGとして出力 ---
+    document.getElementById('exportApngBtn').addEventListener('click', async () => {
+      if (isPlaying) stopPlayback();
+      saveCurrentFrame();
+
+      const validFrames = frames.filter(f => f && f.length > 0);
+      if (validFrames.length < 2) {
+        alert('APNGを出力するには、2コマ以上描いてみてください。');
+        return;
+      }
+
+      const exportBtn = document.getElementById('exportApngBtn');
+      exportBtn.disabled = true;
+      exportBtn.textContent = '出力中...';
+
+      try {
+        const width = 400;
+        const height = 400;
+        const delayMs = Math.round(1000 / parseInt(fpsRange.value, 10));
+        
+        // オフスクリーンキャンバスで背景白の画像を生成し、RGBAバッファを取得
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = width;
+        offCanvas.height = height;
+        const offCtx = offCanvas.getContext('2d');
+
+        const buffers = [];
+        const delays = [];
+
+        for (let frameDataUrl of validFrames) {
+          await new Promise((resolve) => {
+            const img = new Image();
+            img.src = frameDataUrl;
+            img.onload = () => {
+              // 背景を白色で塗りつぶす（APNGビューアーでの視認性向上のため）
+              offCtx.fillStyle = '#ffffff';
+              offCtx.fillRect(0, 0, width, height);
+              offCtx.drawImage(img, 0, 0);
+
+              const imgData = offCtx.getImageData(0, 0, width, height);
+              buffers.push(imgData.data.buffer);
+              delays.push(delayMs);
+              resolve();
+            };
+          });
+        }
+
+        // UPNG.js を用いて APNG (0 = 無限ループ) をエンコード
+        const apngData = UPNG.encode(buffers, width, height, 0, delays);
+        const blob = new Blob([apngData], { type: 'image/png' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `animation_${Date.now()}.png`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error(err);
+        alert('APNGの作成に失敗しました。');
+      } finally {
+        exportBtn.disabled = false;
+        exportBtn.textContent = 'APNGとして出力';
       }
     });
   </script>
